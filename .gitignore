@@ -10,3 +10,4 @@ output/
 skyseg.onnx
 *.safetensors
 *.ckpt
+results_vbench/
