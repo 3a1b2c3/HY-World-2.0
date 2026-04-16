@@ -86,7 +86,10 @@ def vbench_batch(
     with open(info_json, encoding="utf-8") as f:
         entries = json.load(f)
 
-    allowed = {t.strip() for t in image_types.split(",") if t.strip()} if image_types else None
+    if isinstance(image_types, (list, tuple)):
+        allowed = {t.strip() for t in image_types if t.strip()} or None
+    else:
+        allowed = {t.strip() for t in image_types.split(",") if t.strip()} if image_types else None
     seen, prompts = set(), []
     for e in entries:
         name = e["file_name"]
