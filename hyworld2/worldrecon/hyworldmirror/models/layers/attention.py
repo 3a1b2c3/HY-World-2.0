@@ -7,12 +7,25 @@ from torch import nn
 import torch.nn.functional as F
 import torch
 
+_USE_FLASH_ATTN_V3 = False
+_USE_FLASH_ATTN_V2 = False
+flash_attn_func_v3 = None
+flash_attn_func_v2 = None
+
 try:
     from flash_attn_interface import flash_attn_func as flash_attn_func_v3
     _USE_FLASH_ATTN_V3 = True
 except ImportError:
-    from flash_attn.flash_attn_interface import flash_attn_func as flash_attn_func_v2
-    _USE_FLASH_ATTN_V3 = False
+    pass
+
+if not _USE_FLASH_ATTN_V3:
+    try:
+        from flash_attn.flash_attn_interface import flash_attn_func as flash_attn_func_v2
+        _USE_FLASH_ATTN_V2 = True
+    except (ImportError, OSError):
+        import warnings
+        warnings.warn("flash_attn not available — falling back to F.scaled_dot_product_attention")
+        _USE_FLASH_ATTN_V2 = False
 from ...comm.padding import minimal_pad_to_divisible, depad_by_length, pad_by_length
 import torch.distributed as dist
 from ...comm.communication import _All2All, _Allgather
