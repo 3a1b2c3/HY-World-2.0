@@ -24,7 +24,7 @@ for example_dir in leaf_dirs:
     rel = example_dir.relative_to(EXAMPLES_ROOT)
     out = OUTPUT_ROOT / rel
     print(f"\n--- {rel} ---")
-    pipeline(
+    result_dir = pipeline(
         str(example_dir),
         output_path=str(out),
         save_rendered=True,
@@ -34,5 +34,9 @@ for example_dir in leaf_dirs:
         save_gs=True,
         save_points=True,
     )
+    video = Path(result_dir) / "rendered" / "rendered_rgb.mp4"
+    if not video.is_file():
+        raise RuntimeError(f"Rendered video not generated for {rel} — expected: {video}")
+    print(f"[OK] video: {video}")
 
 print("\nAll examples done. Output in:", OUTPUT_ROOT)

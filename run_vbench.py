@@ -163,8 +163,7 @@ def vbench_batch(
                             shutil.copy2(rendered, out_path)
                             status = "ok"
                         else:
-                            status = "no_render"
-                            print(f"[vbench] WARNING: rendered video not found for {image_name}")
+                            raise RuntimeError(f"Rendered video not produced for {image_name} — gsplat_cuda may not be built correctly.")
 
                 ram_gb  = psutil.Process().memory_info().rss / 1024**3
                 vram_gb = torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0.0

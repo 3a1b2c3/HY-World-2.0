@@ -505,37 +505,29 @@ def _timed_call(func, *args, **kwargs):
 
 
 def _save_depth_parallel(depth_cpu, depth_dir, S):
-    def _save_one(i):
+    for i in range(S):
         save_depth_png(depth_dir / f"depth_{i:04d}.png", depth_cpu[i, :, :, 0])
         save_depth_npy(depth_dir / f"depth_{i:04d}.npy", depth_cpu[i, :, :, 0])
-    with ThreadPoolExecutor(max_workers=_IO_WORKERS) as pool:
-        list(pool.map(_save_one, range(S)))
 
 
 def _save_conf_parallel(depth_conf_cpu, conf_dir, S):
-    def _save_one(i):
+    for i in range(S):
         conf = depth_conf_cpu[i]
         c_min, c_max = conf.min(), conf.max()
         norm = (conf - c_min) / (c_max - c_min) if c_max - c_min > 1e-8 else torch.ones_like(conf)
         Image.fromarray((norm.clamp(0, 1) * 255).to(torch.uint8).numpy(), mode="L").save(
             str(conf_dir / f"conf_{i+1:04d}.png"))
-    with ThreadPoolExecutor(max_workers=_IO_WORKERS) as pool:
-        list(pool.map(_save_one, range(S)))
 
 
 def _save_normal_parallel(normals_cpu, normal_dir, S):
-    def _save_one(i):
+    for i in range(S):
         save_normal_png(normal_dir / f"normal_{i:04d}.png", normals_cpu[i])
-    with ThreadPoolExecutor(max_workers=_IO_WORKERS) as pool:
-        list(pool.map(_save_one, range(S)))
 
 
 def _save_sky_mask_parallel(sky_mask, sky_mask_dir, S):
-    def _save_one(i):
+    for i in range(S):
         Image.fromarray((~sky_mask[i]).astype(np.uint8) * 255, mode="L").save(
             str(sky_mask_dir / f"sky_mask_{i:04d}.png"))
-    with ThreadPoolExecutor(max_workers=_IO_WORKERS) as pool:
-        list(pool.map(_save_one, range(S)))
 
 
 def _voxel_prune_gaussians(means, scales, quats, colors, opacities, weights, voxel_size=0.002):
@@ -679,28 +671,32 @@ def save_results(predictions, imgs, img_paths, outdir,
         conf_cpu = conf_cpu.detach().cpu()
     normals_cpu = predictions["normals"][0].detach().cpu() if "normals" in predictions else None
 
-    futures = {}
-    executor = ThreadPoolExecutor(max_workers=_IO_WORKERS)
+    def _run(key, func, *args):
+        result, elapsed = _timed_call(func, *args)
+        if log_time:
+            timings[key] = elapsed
+            if isinstance(result, dict):
+                timings.update(result)
 
     if save_depth and depth_cpu is not None:
         d_dir = outdir / "depth"
         d_dir.mkdir(exist_ok=True)
-        futures["save_depth"] = executor.submit(_timed_call, _save_depth_parallel, depth_cpu, d_dir, S)
+        _run("save_depth", _save_depth_parallel, depth_cpu, d_dir, S)
 
     if save_conf and conf_cpu is not None:
         c_dir = outdir / "depth_conf"
         c_dir.mkdir(exist_ok=True)
-        futures["save_conf"] = executor.submit(_timed_call, _save_conf_parallel, conf_cpu, c_dir, S)
+        _run("save_conf", _save_conf_parallel, conf_cpu, c_dir, S)
 
     if save_normal and normals_cpu is not None:
         n_dir = outdir / "normal"
         n_dir.mkdir(exist_ok=True)
-        futures["save_normal"] = executor.submit(_timed_call, _save_normal_parallel, normals_cpu, n_dir, S)
+        _run("save_normal", _save_normal_parallel, normals_cpu, n_dir, S)
 
     if save_sky_mask and sky_mask is not None:
         sm_dir = outdir / "sky_mask"
         sm_dir.mkdir(exist_ok=True)
-        futures["save_sky_mask"] = executor.submit(_timed_call, _save_sky_mask_parallel, sky_mask, sm_dir, S)
+        _run("save_sky_mask", _save_sky_mask_parallel, sky_mask, sm_dir, S)
 
     if save_gs and "splats" in predictions:
         sp = predictions["splats"]
@@ -728,37 +724,26 @@ def save_results(predictions, imgs, img_paths, outdir,
             ).long()
             means, scales, quats, colors, opacities = means[idx], scales[idx], quats[idx], colors[idx], opacities[idx]
 
-        futures["save_gs_ply"] = executor.submit(
-            _timed_call, save_gs_ply, outdir / "gaussians.ply", means, scales, quats, colors, opacities)
+        _run("save_gs_ply", save_gs_ply, outdir / "gaussians.ply", means, scales, quats, colors, opacities)
 
     if save_camera and "camera_poses" in predictions and "camera_intrs" in predictions:
         cam_p = predictions["camera_poses"][0].detach().cpu().float().numpy()
         cam_i = predictions["camera_intrs"][0].detach().cpu().float().numpy()
-        futures["save_camera"] = executor.submit(_timed_call, save_camera_params, cam_p, cam_i, str(outdir))
+        _run("save_camera", save_camera_params, cam_p, cam_i, str(outdir))
 
     if save_points and "depth" in predictions and "camera_params" in predictions:
         e3x4, intr = vector_to_camera_matrices(predictions["camera_params"], image_hw=(H, W))
         pts_np, cols_np = _compute_points_from_depth(
             predictions["depth"], imgs, e3x4[0], intr[0], S, H, W, filter_mask=filter_mask)
-        futures["save_points"] = executor.submit(
-            _timed_call, _save_points_artifacts, outdir / "points.ply", pts_np, cols_np,
-            compress_pts, compress_pts_max_points, compress_pts_voxel_size)
+        _run("save_points", _save_points_artifacts, outdir / "points.ply", pts_np, cols_np,
+             compress_pts, compress_pts_max_points, compress_pts_voxel_size)
 
     if save_colmap and "camera_params" in predictions:
         e3x4, intr = vector_to_camera_matrices(predictions["camera_params"], image_hw=(new_h, new_w))
-        futures["save_colmap"] = executor.submit(
-            _timed_call, _save_colmap_lightweight,
-            e3x4[0].detach().cpu().float().numpy(), intr[0].detach().cpu().float().numpy(),
-            outdir, new_w, new_h, S, image_names)
+        _run("save_colmap", _save_colmap_lightweight,
+             e3x4[0].detach().cpu().float().numpy(), intr[0].detach().cpu().float().numpy(),
+             outdir, new_w, new_h, S, image_names)
 
-    for key, future in futures.items():
-        result, elapsed = future.result()
-        if log_time:
-            timings[key] = elapsed
-            if isinstance(result, dict):
-                timings.update(result)
-
-    executor.shutdown(wait=False)
     return timings
 
 
