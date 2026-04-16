@@ -7,15 +7,10 @@ video from the resulting Gaussian splats, which is saved as the VBench
 output video.
 
 Usage:
-    python run_vbench.py tencent/HY-World-2.0 ^
-        --output_dir results_vbench/videos ^
-        --num_samples 1 ^
-        --image_types "indoor,scenery" ^
-        --target_size 952 ^
-        --render_interp_per_pair 15
+    python run_vbench.py
 
-    # With a local checkpoint directory:
-    python run_vbench.py ./checkpoints/HY-WorldMirror-2.0 ^
+    # Override model path:
+    python run_vbench.py tencent/HY-World-2.0 ^
         --output_dir results_vbench/videos
 """
 
@@ -41,8 +36,11 @@ def _safe(prompt):
     return re.sub(r'[<>:"/\\|?*]', "_", prompt)[:150]
 
 
+_DEFAULT_MODEL = "C:/Users/kschmid/.cache/huggingface/hub/models--tencent--HY-World-2.0/snapshots/776d5a92c860c25105c62e5d264beef8ac39bcbb"
+
+
 def vbench_batch(
-    model_path="tencent/HY-World-2.0",
+    model_path=_DEFAULT_MODEL,
     output_dir="results_vbench/videos",
     num_samples=1,
     image_types="indoor,scenery",
