@@ -68,7 +68,7 @@ class Attention(nn.Module):
         return q, k, v, B, N, C
 
     def _apply_attention(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
-        if q.dtype==torch.bfloat16 or q.dtype==torch.float16:
+        if (q.dtype == torch.bfloat16 or q.dtype == torch.float16) and (_USE_FLASH_ATTN_V3 or _USE_FLASH_ATTN_V2):
             if q.is_contiguous():
                 q = q.transpose(1,2)
             else:

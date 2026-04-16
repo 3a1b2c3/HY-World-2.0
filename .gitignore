@@ -1,9 +1,12 @@
+.venv/
 __pycache__/
 *.py[cod]
 *$py.class
 .gradio/
 inference_output/
 gradio_demo_output/
+results_vbench/
+output/
 skyseg.onnx
 *.safetensors
 *.ckpt
