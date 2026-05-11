@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/b56f4750-25c9-48fb-83ff-d58526711463
 - **[April 16, 2026]**: 🚀 Release HY-World 2.0 technical report & partial codes!
 - **[April 16, 2026]**: 🤗 Open-source WorldMirror 2.0 inference code and model weights!
 - **[Coming Soon]**: Release Full HY-World 2.0 (World Generation) inference code.
-- **[Coming Soon]**: Release ![Panorama Generation](https://img.shields.io/badge/Panorama_Generation-4285F4?style=flat-square) (HY-Pano 2.0) model weights & code.
+- **[May 11, 2026]**: 🤗 Open-source ![Panorama Generation](https://img.shields.io/badge/Panorama_Generation-4285F4?style=flat-square) (HY-Pano 2.0) model weights & code!
 - **[Coming Soon]**: Release ![Trajectory Planning](https://img.shields.io/badge/Trajectory_Planning-EA4335?style=flat-square)（WorldNav） code.
 - **[Coming Soon]**: Release ![World Expansion](https://img.shields.io/badge/World_Expansion-FBBC05?style=flat-square)(WorldStereo 2.0) model weights & inference code.
 
@@ -129,7 +129,7 @@ Existing world models, such as Genie 3, Cosmos, and HY-World 1.5 (WorldPlay+Worl
 - ✅ Technical Report
 - ✅ WorldMirror 2.0 Code & Model Checkpoints
 - ⬜ Full Inference Code for World Generation (WorldNav + World Composition)
-- ⬜ Panorama Generation (HY-Pano 2.0) Model & Code — [HunyuanWorld 1.0](https://github.com/Tencent-Hunyuan/HunyuanWorld-1.0) available as interim alternative
+- ✅ Panorama Generation (HY-Pano 2.0) Model & Code
 - ⬜ World Expansion (WorldStereo 2.0) Model & Code — [WorldStereo](https://github.com/FuchengSu/WorldStereo) available as interim alternative
 
 
@@ -146,7 +146,7 @@ Existing world models, such as Genie 3, Cosmos, and HY-World 1.5 (WorldPlay+Worl
 
 | Model | Description | Params | Date | Hugging Face |
 |-------|-------------|--------|------|--------------|
-| HY-Pano-2 [new] | Text / image &rarr; 360° panorama | — | Coming Soon | — |
+| HY-Pano-2 [new] | Text / image &rarr; 360° panorama | ~80B | 2026 | [Download](https://huggingface.co/tencent/HY-World-2.0/tree/main/HY-Pano-2.0) |
 
 ### World Expansion — WorldStereo Series
 
@@ -196,7 +196,17 @@ pip install flash-attn --no-build-isolation
 
 ### Code Usage — Panorama Generation (HY-Pano-2)
 
-*Coming soon.*
+For full documentation and CLI reference, see **[hyworld2/panogen/README.md](hyworld2/panogen/README.md)**.
+
+We provide a `diffusers`-like Python API for HY-Pano 2.0. Model weights are automatically downloaded from Hugging Face on first run.
+
+```python
+from pipeline import HunyuanPanoPipeline
+
+pipeline = HunyuanPanoPipeline.from_pretrained('tencent/HY-World-2.0')
+output = pipeline('input.png')
+output.save('output_panorama.png')
+```
 
 ### Code Usage — World Generation (WorldNav, WorldStereo-2, and 3DGS)
 
