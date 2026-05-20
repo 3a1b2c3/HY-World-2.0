@@ -65,13 +65,17 @@ def main() -> int:
                         help="Download everything except --pano (use --pano explicitly because it's huge).")
     args = parser.parse_args()
 
+    # No flag => treat as --all (mirror + pano-lora + qwen, but NOT the 80 B
+    # --pano which the user must opt into explicitly).
+    if not (args.mirror or args.pano or args.pano_lora or args.qwen or args.all):
+        print("[info] no flag given; defaulting to --all (mirror + pano-lora + qwen). "
+              "Add --pano explicitly for the 80 B full pano model.")
+        args.all = True
+
     if args.all:
         args.mirror = True
         args.pano_lora = True
         args.qwen = True
-
-    if not (args.mirror or args.pano or args.pano_lora or args.qwen):
-        parser.error("specify at least one of --mirror / --pano / --pano-lora / --qwen / --all")
 
     print(f"CKPT_DIR = {CKPT_DIR}")
     print()
