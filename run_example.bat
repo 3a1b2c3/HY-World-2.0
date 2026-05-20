@@ -26,7 +26,7 @@ setlocal enableextensions enabledelayedexpansion
 cd /d "%~dp0"
 call .venv\Scripts\activate.bat
 
-set MODULE=worldrecon
+set MODULE=all
 :parse_args
 if "%~1"=="" goto args_done
 if /I "%~1"=="--module" ( set MODULE=%~2 & shift & shift & goto parse_args )
