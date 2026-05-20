@@ -35,7 +35,7 @@ regex
 # Point cloud & 3D
 trimesh
 plyfile
-open3d==0.18.0
+open3d>=0.19.0
 pycolmap==3.10.0
 
 # Metrics & logging
