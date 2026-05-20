@@ -1,12 +1,25 @@
+<<<<<<< HEAD
 .venv/
 __pycache__/
+=======
+__pycache__/
+.claude/
+>>>>>>> main
 *.py[cod]
 *$py.class
 .gradio/
 inference_output/
 gradio_demo_output/
+<<<<<<< HEAD
 results_vbench/
 output/
 skyseg.onnx
 *.safetensors
 *.ckpt
+=======
+skyseg.onnx
+*.safetensors
+*.ckpt
+CLAUDE.md
+commands.sh
+>>>>>>> main

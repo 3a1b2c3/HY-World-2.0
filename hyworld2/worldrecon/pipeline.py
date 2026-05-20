@@ -545,9 +545,13 @@ class WorldMirrorPipeline:
             # Render interpolated video from Gaussian splats
             if save_rendered and "splats" in predictions:
                 inner_model = model.module if hasattr(model, 'module') else model
+<<<<<<< HEAD
                 if not hasattr(inner_model, 'gs_renderer'):
                     raise RuntimeError("[Pipeline] Model has no gs_renderer — cannot render video")
                 if True:
+=======
+                if hasattr(inner_model, 'gs_renderer'):
+>>>>>>> main
                     t0_render = time.perf_counter()
                     try:
                         splats_f32 = {k: v.float() if isinstance(v, torch.Tensor) else v
@@ -566,9 +570,13 @@ class WorldMirrorPipeline:
                         if log_time:
                             timings["render_video"] = time.perf_counter() - t0_render
                     except Exception as e:
+<<<<<<< HEAD
                         import traceback
                         traceback.print_exc()
                         raise RuntimeError(f"[Pipeline] Video rendering failed: {e}") from e
+=======
+                        print(f"[Pipeline] Warning: video rendering failed: {e}")
+>>>>>>> main
 
             if not is_distributed:
                 del predictions
@@ -660,6 +668,13 @@ def _disable_heads(model, head_names):
         "points": ("enable_pts",   ["pts_head"]),
         "gs":     ("enable_gs",    ["gs_head", "gs_renderer"]),
     }
+<<<<<<< HEAD
+=======
+    # GS rendering requires camera poses; auto-disable GS if camera is disabled
+    head_names = list(head_names)
+    if "camera" in head_names and "gs" not in head_names:
+        head_names.append("gs")
+>>>>>>> main
     freed = 0
     for name in head_names:
         if name not in mapping:
