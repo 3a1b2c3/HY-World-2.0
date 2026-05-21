@@ -56,13 +56,28 @@ if errorlevel 1 ( echo FAIL step1 & exit /b 1 )
 
 echo.
 echo --- 2/7  pip install utils3d (worldgen helper, missing from reqs) ---
-%PIP% install utils3d
+:: --no-deps: older utils3d (<=0.1.2) pins open3d, which has no Python 3.12 + Windows
+:: wheel and breaks pip resolution. utils3d 0.1.3 doesn't need open3d at import time
+:: for our worldgen usage (traj_generate.py only uses light utilities).
+%PIP% install --no-deps utils3d
 if errorlevel 1 ( echo FAIL step2 & exit /b 1 )
 
 echo.
 echo --- 3/7  activate MSVC + CUDA for source builds ---
+:: Clear user-level INCLUDE/LIB before vcvars. On this machine the user env has
+:: stale racer-x\_build\host-deps\winsdk\include\* paths that REPLACE the proper
+:: Windows SDK headers — cl.exe then can't find corecrt.h / windows.h and dies
+:: with "cl.exe failed: None" during torch CUDAExtension builds. vcvars64.bat
+:: appends to INCLUDE/LIB, it doesn't reset them — so we wipe first.
+set "INCLUDE="
+set "LIB="
+set "LIBPATH="
 call %VCVARS% >nul
 if errorlevel 1 ( echo FAIL step3 (vcvars64.bat) & exit /b 1 )
+:: Pin CUDA_HOME / CUDA_PATH to the cu128 toolkit (matches torch 2.7+cu128 wheels).
+:: Required by torch.utils.cpp_extension.CUDAExtension during step-4 source builds.
+if not defined CUDA_HOME set "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+if not defined CUDA_PATH set "CUDA_PATH=%CUDA_HOME%"
 set "PATH=%CUDA_HOME%\bin;%PATH%"
 where cl >nul 2>nul
 if errorlevel 1 ( echo FAIL step3: cl.exe still not on PATH after vcvars & exit /b 1 )
@@ -71,8 +86,13 @@ where nvcc >nul 2>nul
 if errorlevel 1 ( echo WARN: nvcc not on PATH — some CUDA builds may fail )
 
 echo.
-echo --- 4/7  pip install --no-build-isolation -r requirements_git.txt  (~10 min, compiles from source) ---
-%PIP% install --no-build-isolation -r requirements_git.txt
+echo --- 4/7  install_git_deps.py  (manual clone + pip install per dep; ~10 min) ---
+:: Why not pip / uv pip directly:
+::   - pip's VCS handler hits subprocess._communicate thread race on Py3.12+Win
+::   - uv pip --no-build-isolation runs builds in subprocesses that don't inherit
+::     CUDA_HOME on Windows (torch CUDAExtension fails)
+:: install_git_deps.py: git-clone manually, then `pip install` from local path.
+"%PY%" "%~dp0install_git_deps.py"
 if errorlevel 1 ( echo FAIL step4 & exit /b 1 )
 
 if "%SKIP_WORLDGEN%"=="1" goto :download_models
@@ -85,7 +105,9 @@ if not exist "hyworld2\worldgen\third_party\gsplat_maskgaussian" (
     exit /b 2
 )
 pushd "hyworld2\worldgen\third_party\gsplat_maskgaussian"
-%PIP% install -e .
+:: --no-build-isolation so setup.py can `import torch` (build env has no torch)
+:: --no-deps so pip doesn't recurse into git+ deps + hit the Py3.12 thread race
+%PIP% install --no-build-isolation --no-deps -e .
 set RC=%ERRORLEVEL%
 popd
 if not %RC%==0 ( echo FAIL step5 rc=%RC% & exit /b %RC% )
@@ -102,15 +124,16 @@ if not exist "recastnavigation\.git" (
     git submodule update --init --recursive
     if errorlevel 1 ( echo FAIL step6 (submodule init) & popd & exit /b 1 )
 )
-%PIP% install -e .
+:: --no-build-isolation so setup.py can `import torch`/use venv packages.
+%PIP% install --no-build-isolation --no-deps -e .
 set RC=%ERRORLEVEL%
 popd
 if not %RC%==0 ( echo FAIL step6 rc=%RC% & exit /b %RC% )
 
 :download_models
 echo.
-echo --- 7/7  download_models.py --module all (per-file, dodges Windows thread_map crash) ---
-%PY% download_models.py --module all
+echo --- 7/7  download_models.py --all (per-file, dodges Windows thread_map crash) ---
+%PY% download_models.py --all
 if errorlevel 1 ( echo FAIL step7 & exit /b 1 )
 
 echo.

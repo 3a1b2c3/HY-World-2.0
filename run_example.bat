@@ -26,7 +26,9 @@ call .venv\Scripts\activate.bat
 set MODULE=all
 :parse_args
 if "%~1"=="" goto args_done
-if /I "%~1"=="--module" ( set MODULE=%~2 & shift & shift & goto parse_args )
+:: Quote the assignment so cmd doesn't fold the space before `&` into the value
+:: (otherwise MODULE becomes "worldgen " and the dispatch comparison below fails).
+if /I "%~1"=="--module" ( set "MODULE=%~2" & shift & shift & goto parse_args )
 shift
 goto parse_args
 :args_done
@@ -41,7 +43,10 @@ exit /b 2
 
 :run_worldrecon
 echo === WorldMirror 2.0 reconstruction (examples\worldrecon\realistic\Park) ===
-python -m hyworld2.worldrecon.pipeline --input_path examples\worldrecon\realistic\Park --output_path output\park --save_rendered --render_interp_per_pair 15 --enable_bf16
+:: Point at the local checkpoint dir from setup step 7 (download_models.py).
+:: Without this, pipeline.py falls through to HuggingFace snapshot_download
+:: which re-pulls the 5 GB HY-WorldMirror-2.0 weights into ~/.cache (filling C:).
+python -m hyworld2.worldrecon.pipeline --pretrained_model_name_or_path "%~dp0checkpoint" --subfolder HY-WorldMirror-2.0 --input_path examples\worldrecon\realistic\Park --output_path output\park --save_rendered --render_interp_per_pair 15 --enable_bf16
 if errorlevel 1 ( echo FAIL worldrecon rc=%ERRORLEVEL% & exit /b %ERRORLEVEL% )
 if /I not "%MODULE%"=="all" exit /b 0
 
@@ -75,7 +80,11 @@ echo === HY-World 2.0 world generation (5-stage pipeline) ===
 if not defined HY_WG_TARGET_PATH set HY_WG_TARGET_PATH=%~dp0examples\worldgen\case000
 if not defined HY_WG_RESULT_DIR  set HY_WG_RESULT_DIR=%~dp0output\worldgen
 if not defined HY_WG_GPUS        set HY_WG_GPUS=1
-if not defined LLM_ADDR          set LLM_ADDR=0.0.0.0
+:: 0.0.0.0 is a server BIND wildcard. Using it as a CLIENT target raises
+:: WinError 10049 on Windows. Force-rewrite the legacy default so a stale
+:: LLM_ADDR=0.0.0.0 left in the shell environment gets coerced to loopback.
+if not defined LLM_ADDR set LLM_ADDR=127.0.0.1
+if "%LLM_ADDR%"=="0.0.0.0" set LLM_ADDR=127.0.0.1
 if not defined LLM_PORT          set LLM_PORT=8000
 if not defined LLM_NAME          set LLM_NAME=Qwen/Qwen3-VL-8B-Instruct
 

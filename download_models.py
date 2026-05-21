@@ -24,7 +24,9 @@ import os
 import sys
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
+import fnmatch
+
+from huggingface_hub import HfApi, hf_hub_download
 
 REPO_ROOT = Path(__file__).resolve().parent
 CKPT_DIR = Path(os.environ.get("HYWORLD_CKPT_DIR", REPO_ROOT / "checkpoint"))
@@ -41,12 +43,19 @@ def _download(repo_id: str, dest: Path, label: str, allow: list[str] | None = No
     dest.mkdir(parents=True, exist_ok=True)
     label_full = f"{label} ({repo_id}" + (f" {allow}" if allow else "") + ")"
     print(f"[get ] {label_full} -> {dest}")
-    snapshot_download(
-        repo_id=repo_id,
-        local_dir=str(dest),
-        allow_patterns=allow,
-        resume_download=True,
-    )
+    # Avoid huggingface_hub.snapshot_download — it always spawns a tqdm
+    # ThreadPoolExecutor which deadlocks on Windows + Python 3.12 with
+    # "RuntimeError: cannot join thread before it is started". Sequential
+    # per-file hf_hub_download has no executor and runs reliably.
+    api = HfApi()
+    info = api.repo_info(repo_id)
+    files = [s.rfilename for s in info.siblings]
+    if allow:
+        files = [f for f in files if any(fnmatch.fnmatch(f, p) for p in allow)]
+    print(f"  pulling {len(files)} file(s) sequentially ...")
+    for i, fname in enumerate(files, 1):
+        hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(dest))
+        print(f"  [{i}/{len(files)}] {fname}")
     print(f"[done] {label}: {dest}")
     return True
 
@@ -76,6 +85,12 @@ def main() -> int:
         args.mirror = True
         args.pano_lora = True
         args.qwen = True
+
+    if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")):
+        print("FATAL: HF_TOKEN (or HUGGINGFACE_HUB_TOKEN) env var not set.", file=sys.stderr)
+        print("  Get a token at https://huggingface.co/settings/tokens then:", file=sys.stderr)
+        print("    set HF_TOKEN=hf_xxx", file=sys.stderr)
+        return 2
 
     print(f"CKPT_DIR = {CKPT_DIR}")
     print()
