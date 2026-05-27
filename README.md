@@ -106,7 +106,7 @@ Existing world models, such as Genie 3, Cosmos, and HY-World 1.5 (WorldPlay+Worl
 
 - **Interactive Character Exploration**
 
-  Go beyond viewing — **play inside your generated worlds**. HY-World 2.0 supports first-person navigation and third-person character mode, enabling users to freely explore AI-generated streets, buildings, and landscapes with physics-based collision.  Go to [our product page](https://3d.hunyuan.tencent.com/sceneTo3D) for free try (![Very Crowded Now](https://img.shields.io/badge/Very_Crowded_Now,_Be_Patient-EA4335?style=flat-square)). 
+  Go beyond viewing — **play inside your generated worlds**. HY-World 2.0 supports first-person navigation and third-person character mode, enabling users to freely explore AI-generated streets, buildings, and landscapes with physics-based collision.  Go to [our product page](https://3d.hunyuan.tencent.com/sceneTo3D) for free try. 
 
 <p align="center">
   <img src="assets/interactive.gif" width="95%">
