@@ -10,3 +10,19 @@ skyseg.onnx
 *.ckpt
 CLAUDE.md
 commands.sh
+
+# Local venvs and uv build/clone caches
+.venv/
+venv/
+fastvideo-venv*/
+.third_party_clones/
+
+# Downloaded model weights (multi-GB)
+checkpoint/
+output/
+
+# Local setup / run logs
+setup_full.log
+gsplat_build.log
+build_vipe.log
+drive_*.log
