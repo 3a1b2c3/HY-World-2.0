@@ -167,6 +167,28 @@ if not defined HY_NO_WORLDSTEREO_CHECK (
     )
 )
 
+:: Pre-flight: pytorch3d must be built with CUDA support. The default pip
+:: install on Windows gives a CPU-only build, which makes Stage 2's
+:: multi_gpu_point_rendering crash with "Not compiled with GPU support" from
+:: rasterize_points after Stage 1 has already spent ~1-2 min running.
+:: PackedToPaddedCuda only exists in pytorch3d._C when CUDA was compiled in.
+:: Skip with HY_NO_PYTORCH3D_CHECK=1.
+if not defined HY_NO_PYTORCH3D_CHECK (
+    python -c "from pytorch3d import _C; assert hasattr(_C, 'PackedToPaddedCuda'), 'no CUDA'" >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ERROR: pytorch3d is missing CUDA support ^(or not installed^).
+        echo Stage 2 ^(traj_render.py^) will crash with:
+        echo   RuntimeError: Not compiled with GPU support
+        echo from pytorch3d._C.rasterize_points.
+        echo.
+        echo Fix: rebuild pytorch3d from source with CUDA + sm_120:
+        echo   compile_pytorch3d.bat --clean
+        echo Skip this check with: set HY_NO_PYTORCH3D_CHECK=1
+        exit /b 2
+    )
+)
+
 :: stage-5 max_steps auto-scale by GPU count when user didn't pin it.
 if not defined HY_WG_MAX_STEPS (
     if "%HY_WG_GPUS%"=="1" set HY_WG_MAX_STEPS=8000
