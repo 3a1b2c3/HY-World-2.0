@@ -104,10 +104,19 @@ if not exist "hyworld2\worldgen\third_party\gsplat_maskgaussian" (
     echo Did you clone the repo with --recursive? Run: git submodule update --init --recursive
     exit /b 2
 )
+:: Compile for Blackwell (RTX 5090 sm_120) plus older arches likely to be
+:: encountered on dev boxes. Without this, torch.utils.cpp_extension picks a
+:: default arch list that excludes 12.0 on torch 2.7.x, and gsplat kernels
+:: fail at runtime with "no kernel image is available for execution on the
+:: device". Override HY_TORCH_CUDA_ARCH_LIST to target a different set.
+if not defined HY_TORCH_CUDA_ARCH_LIST set "HY_TORCH_CUDA_ARCH_LIST=8.6;8.9;9.0;12.0+PTX"
+set "TORCH_CUDA_ARCH_LIST=%HY_TORCH_CUDA_ARCH_LIST%"
+echo TORCH_CUDA_ARCH_LIST=%TORCH_CUDA_ARCH_LIST%
 pushd "hyworld2\worldgen\third_party\gsplat_maskgaussian"
 :: --no-build-isolation so setup.py can `import torch` (build env has no torch)
 :: --no-deps so pip doesn't recurse into git+ deps + hit the Py3.12 thread race
-%PIP% install --no-build-isolation --no-deps -e .
+:: --force-reinstall to recompile if it was previously built for a different arch
+%PIP% install --no-build-isolation --no-deps --force-reinstall -e .
 set RC=%ERRORLEVEL%
 popd
 if not %RC%==0 ( echo FAIL step5 rc=%RC% & exit /b %RC% )

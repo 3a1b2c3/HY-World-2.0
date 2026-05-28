@@ -13,6 +13,11 @@ HF subfolders inside tencent/HY-World-2.0:
 
 External:
   Qwen/Qwen3-VL-8B-Instruct - VLM served via vLLM for traj_generate.py (worldgen)
+  hanshanxue/WorldStereo    - video-diffusion DiT used by worldgen stage 3
+                              (video_gen.py). Lives in the HF cache, not
+                              CKPT_DIR, because that's where from_pretrained
+                              looks at runtime. Default variant subfolder is
+                              ``worldstereo-memory-dmd`` (3-step distilled).
 
 Env-var overrides:
   HYWORLD_CKPT_DIR  destination root  (default: <repo>/checkpoint)
@@ -33,6 +38,29 @@ CKPT_DIR = Path(os.environ.get("HYWORLD_CKPT_DIR", REPO_ROOT / "checkpoint"))
 
 HYWORLD_REPO = "tencent/HY-World-2.0"
 QWEN_REPO = "Qwen/Qwen3-VL-8B-Instruct"
+WORLDSTEREO_REPO = "hanshanxue/WorldStereo"
+WORLDSTEREO_DEFAULT_VARIANT = "worldstereo-memory-dmd"
+
+
+def _download_to_hf_cache(repo_id: str, label: str, allow: list[str] | None = None) -> bool:
+    """Download into ~/.cache/huggingface/hub/ (no local_dir). Use for models
+    that downstream code loads via ``from_pretrained(repo_id, ...)`` — those
+    expect the HF cache layout, not a local copy."""
+    api = HfApi()
+    info = api.repo_info(repo_id)
+    files = [s.rfilename for s in info.siblings]
+    if allow:
+        files = [f for f in files if any(fnmatch.fnmatch(f, p) for p in allow)]
+    if not files:
+        print(f"[skip] {label}: no files match {allow}")
+        return True
+    print(f"[get ] {label} ({repo_id}" + (f" {allow}" if allow else "") + ") -> HF cache")
+    print(f"  pulling {len(files)} file(s) sequentially ...")
+    for i, fname in enumerate(files, 1):
+        hf_hub_download(repo_id=repo_id, filename=fname)
+        print(f"  [{i}/{len(files)}] {fname}")
+    print(f"[done] {label}: HF cache")
+    return True
 
 
 def _download(repo_id: str, dest: Path, label: str, allow: list[str] | None = None) -> bool:
@@ -70,14 +98,21 @@ def main() -> int:
                         help="HY-Pano-2 LoRA-only variant (~425M, ~850 MB). Pairs with Qwen-Image-Edit backend.")
     parser.add_argument("--qwen", action="store_true",
                         help="Qwen3-VL-8B-Instruct (~16 GB) for vLLM trajectory planning in worldgen.")
+    parser.add_argument("--worldstereo", action="store_true",
+                        help=f"hanshanxue/WorldStereo video DiT for worldgen stage 3 (default variant "
+                             f"'{WORLDSTEREO_DEFAULT_VARIANT}', ~10-25 GB). Goes to HF cache, not CKPT_DIR.")
+    parser.add_argument("--worldstereo-variant", type=str, default=WORLDSTEREO_DEFAULT_VARIANT,
+                        help=f"WorldStereo subfolder to pull. Default '{WORLDSTEREO_DEFAULT_VARIANT}' "
+                             f"matches video_gen.py's default --model_type. Use 'worldstereo-memory' for the "
+                             f"un-distilled variant, or '*' to pull all variants (large).")
     parser.add_argument("--all", action="store_true",
                         help="Download everything except --pano (use --pano explicitly because it's huge).")
     args = parser.parse_args()
 
-    # No flag => treat as --all (mirror + pano-lora + qwen, but NOT the 80 B
-    # --pano which the user must opt into explicitly).
-    if not (args.mirror or args.pano or args.pano_lora or args.qwen or args.all):
-        print("[info] no flag given; defaulting to --all (mirror + pano-lora + qwen). "
+    # No flag => treat as --all (mirror + pano-lora + qwen + worldstereo, but
+    # NOT the 80 B --pano which the user must opt into explicitly).
+    if not (args.mirror or args.pano or args.pano_lora or args.qwen or args.worldstereo or args.all):
+        print("[info] no flag given; defaulting to --all (mirror + pano-lora + qwen + worldstereo). "
               "Add --pano explicitly for the 80 B full pano model.")
         args.all = True
 
@@ -85,6 +120,7 @@ def main() -> int:
         args.mirror = True
         args.pano_lora = True
         args.qwen = True
+        args.worldstereo = True
 
     if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")):
         print("FATAL: HF_TOKEN (or HUGGINGFACE_HUB_TOKEN) env var not set.", file=sys.stderr)
@@ -139,6 +175,18 @@ def main() -> int:
         except Exception as e:
             print(f"[FAIL] Qwen3-VL-8B-Instruct: {e}", file=sys.stderr)
             failures.append("Qwen3-VL-8B-Instruct")
+
+    if args.worldstereo:
+        # Filter: keep root-level json/md + the requested variant subfolder.
+        # video_gen.py needs the variant + the repo-level config files.
+        variant = args.worldstereo_variant
+        allow = ["*.json", "*.md", "README*", f"{variant}/*"] if variant != "*" else None
+        label = f"WorldStereo ({variant})" if variant != "*" else "WorldStereo (all variants)"
+        try:
+            _download_to_hf_cache(WORLDSTEREO_REPO, label, allow=allow)
+        except Exception as e:
+            print(f"[FAIL] WorldStereo: {e}", file=sys.stderr)
+            failures.append("WorldStereo")
 
     print()
     if failures:

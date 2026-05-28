@@ -725,9 +725,208 @@ The circular blending step (`blend_width=32`) wraps the left and right edges to 
 
 ---
 ## World Generation
-*Coming soon.*
-This section will document the world generation pipeline, including:
-- Trajectory planning configuration
-- World expansion with memory-driven video generation
-- World composition (point cloud expansion + 3DGS optimization)
-- End-to-end generation from text/image to navigable 3D world
+
+End-to-end pipeline: **single 360° panorama → fully-explorable 3D Gaussian splat scene**.
+Five sequential stages, orchestrated by `run_example.bat --module worldgen` (Windows)
+or `bash scripts/run_worldgen.sh` (Linux/WSL).
+
+### Input
+
+A single case dir at `examples/worldgen/<case>/` containing:
+
+| File | Required | Purpose |
+|---|---|---|
+| `panorama.png` | yes | Equirectangular 360° panorama (typically 2:1, e.g. 4096×2048 or 8192×4096). Can come from a real 360° camera, HY-Pano 2.0, or any equirect source. |
+| `meta_info.json` | no (default indoor) | `{"scene_type": "indoor"\|"outdoor"}` — chooses trajectory + sampling priors. |
+
+Two examples ship: `case000` (indoor) and `case001` (no meta — defaults to indoor).
+
+### Stage 1 — Trajectory planning  (`hyworld2/worldgen/traj_generate.py`)
+
+**What it does**: lifts the panorama into a 3D scene representation and plans
+where the virtual cameras should fly through it.
+
+- Predict per-pixel depth on the equirectangular pano via **MoGe-2 ViT-L**
+- Build a global mesh + point cloud + normal map + sky mask
+- Sample 3 camera views (`view0/`, `view1/`, `view2/`) from the panorama center
+- For each view, plan 3 trajectories (`traj0/`, `traj1/`, `traj2/`) using the
+  navmesh produced from the global mesh
+- Optionally consult Qwen3-VL via the local VLM server to caption each
+  trajectory and enforce semantic plausibility (`--force_vlm`)
+- Write everything to `<case>/render_results/`
+
+**Models used**: MoGe-2, ZIM (matting for sky/foreground), Qwen3-VL (when VLM available).
+
+**Output**:
+```
+render_results/
+├── global_mesh.ply          (raw mesh from MoGe depth)
+├── global_pcd.ply           (point cloud)
+├── global_normal.npy        (per-pixel normals)
+├── sky_mask.png + sky_pcd.ply
+├── cameras.glb              (planned trajectory as 3D geometry, viewable in MeshLab)
+├── cameras_navi.glb         (navmesh trajectory)
+├── view{0,1,2}/
+│   ├── start_frame.png      (perspective crop of pano at this view's pose)
+│   ├── points.ply           (view-local point cloud)
+│   ├── point_mask.png
+│   ├── projected_xy.npy
+│   └── traj{0,1,2}/
+│       └── camera.json      (per-frame intrinsics + extrinsics for this trajectory)
+├── polar_bank/              (image bank: pano sampled at polar offsets — used for trajectory planning)
+└── pano_bank/               (image bank: extra pano samples for the planner)
+```
+
+### Stage 2 — Trajectory rendering  (`hyworld2/worldgen/traj_render.py`)
+
+**What it does**: renders an RGB video along each trajectory from the global
+mesh. These are the "ground truth" frames the video diffusion model will
+condition on in Stage 3.
+
+- Uses `torchrun --nproc_per_node N` for multi-GPU rasterization
+- Reads per-frame poses from `view*/traj*/camera.json`
+- Writes one video per (view, traj) pair
+
+**Models used**: none — pure mesh rasterization.
+
+**Output**:
+```
+render_results/view*/traj*/
+└── *_render.mp4              (rendered RGB along the trajectory)
+```
+
+### Stage 3 — World expansion / memory-driven video generation  (`hyworld2/worldgen/video_gen.py`)
+
+**What it does**: uses **WorldStereo** (HY-World's video diffusion model) to
+*hallucinate* novel views along each trajectory, filling in geometry the
+single panorama couldn't see (occluded regions, areas behind the camera,
+detail beyond pano resolution).
+
+- Loads MoGe-2 (depth) + SAM 3 (video segmentation) + WorldStereo (DiT)
+- For each (view, traj), runs WorldStereo conditioned on the Stage 2 render
+  + the panorama + the per-frame poses
+- Memory bank pattern: the model sees previously-generated frames as memory
+  so the world is consistent across trajectories
+- Default model variant: `worldstereo-memory-dmd` (3-step distilled, fastest)
+- Output for each trajectory: a generated mp4 + a per-frame aligned point cloud
+
+**Models used**: WorldStereo (HY-World), MoGe-2, SAM 3, Qwen3-VL (recaptioning).
+
+**Output**:
+```
+render_results/view*/traj*/
+└── worldstereo-memory-dmd_result.mp4     (generated novel views)
+render_results/view*/generation_bank_worldstereo-memory-dmd/
+└── aligned_pcd.ply                       (point cloud reconstructed from generated views)
+```
+
+### Stage 4 — Build GS training data  (`hyworld2/worldgen/gen_gs_data.py`)
+
+**What it does**: consolidates the original panorama + Stage 2/3 rendered
+frames + their per-frame poses + the aligned point clouds into a flat dir
+that the 3DGS trainer can consume.
+
+- Splits sky from non-sky if requested (`--split_sky`)
+- Saves normals (`--save_normal`) for normal-loss regularization
+- Resolves overlapping point clouds across (view, traj) pairs
+
+**Models used**: none (data packaging).
+
+**Output**:
+```
+<case>/gs_data/
+├── images/             (all training frames)
+├── points3D.ply        (merged point cloud, used as 3DGS init)
+├── cameras.json
+├── normals/            (when --save_normal)
+└── sky_mask/           (when --split_sky)
+```
+
+### Stage 5 — 3DGS optimization  (`world_gs_trainer`)
+
+**What it does**: trains a 3D Gaussian Splatting representation on the
+augmented dataset until the splats reproduce all Stage 2+3 views.
+
+- Init: from `points3D.ply` (point cloud from previous stages)
+- Loss: photometric L1 + SSIM + (optional) depth + normal + mask losses
+- Density control: `--strategy.refine-*` flags govern split/prune cadence
+- Anchor protection (`--use_anchor_protection`) keeps the initial points stable
+- Mask-aware Gaussians (`--use_mask_gaussian`): per-Gaussian visibility masks for cleaner sky/foreground separation
+- Default `--max_steps 8000` on 1 GPU (~30-60 min on a 5090)
+- Saves `.ply` checkpoints at `--save_steps` and exports a mesh at the end (`--export_mesh`)
+- Optional spz compression (`--convert_to_spz`) for compact web delivery
+
+**Output**:
+```
+output/worldgen/<case>/
+├── ckpts/
+│   └── ckpt_<step>_rank0.pt
+├── gaussians.ply                    (the final 3DGS — what you load in viewers)
+├── gaussians.spz                    (compressed splat, when --convert_to_spz)
+├── position_meta_info.json          (initial camera pose for show_gs.py)
+├── meshes/                          (when --export_mesh)
+└── eval/
+    └── renders/                     (eval renders along held-out cameras)
+```
+
+### Models touched across all 5 stages
+
+| Stage | Model | HF repo |
+|---|---|---|
+| 1 | MoGe-2 (depth) | `Ruicheng/moge-2-vitl-normal` (~1.3 GB) |
+| 1 | ZIM (image matting) | `naver-iv/zim-anything-vitl` (~1.3 GB) |
+| 1+3 | Qwen3-VL (VLM) | `Qwen/Qwen3-VL-8B-Instruct` (~16 GB) |
+| 3 | WorldStereo (video DiT) | `hanshanxue/WorldStereo` (subfolder `worldstereo-memory-dmd`, varies) |
+| 3 | SAM 3 video | `facebook/sam3` (~3.3 GB) |
+| Backbone | DINOv3 (used by WorldMirror in worldrecon, indirectly here) | `facebook/dinov3-vit{b,l}16-pretrain-lvd1689m` |
+
+Total weight footprint for worldgen: ~30-50 GB once everything is cached.
+
+### Adding more examples
+
+A worldgen "case" is just a folder of:
+```
+examples/worldgen/<your_case>/
+├── panorama.png          # equirectangular 360°, 2:1 aspect (e.g. 4096×2048)
+└── meta_info.json        # {"scene_type": "indoor"} or "outdoor"
+```
+
+Three ways to source a `panorama.png`:
+
+1. **Real 360° camera** — Theta, Insta360, etc. Export equirectangular.
+2. **HY-Pano 2.0** — generate a panorama from any single image:
+   ```cmd
+   set HY_PANO_INPUT_PNG=path\to\seed.jpg
+   set HY_PANO_MODEL_DIR=%~dp0checkpoint\HY-Pano-2.0
+   run_example.bat --module panogen
+   ```
+   Output lands at `output\panorama.png` — copy it into a new `case/` dir.
+3. **Free equirectangular sources** — polyhaven HDRIs (`.hdr` → convert to png), Flickr `equirectangular` tag, Sketchfab 360 photos.
+
+To pick which case the pipeline runs:
+```cmd
+set HY_WG_TARGET_PATH=%~dp0examples\worldgen\my_new_case
+run_example.bat --module worldgen
+```
+
+### Total wall-clock (RTX 5090, single GPU)
+
+| Stage | Time | Notes |
+|---|---:|---|
+| 1 (traj_generate) | 3–5 min | One-time per case; results cached on disk |
+| 2 (traj_render) | 1–3 min | Cheap rasterization |
+| 3 (video_gen) | 15–30 min | Dominated by WorldStereo DiT inference × 9 trajectories |
+| 4 (gen_gs_data) | 1–2 min | I/O bound |
+| 5 (3DGS train) | 30–60 min | `--max_steps 8000` default; scales with `HY_WG_MAX_STEPS` |
+| **End-to-end** | **~1–2 hours** | First run also pays HF download cost for WorldStereo (~one-time) |
+
+### Common failure modes (Windows-specific)
+
+| Error | Cause | Fix |
+|---|---|---|
+| `use_libuv was requested but PyTorch was built without libuv support` | torch.distributed TCPStore default on Windows | `set USE_LIBUV=0` (already in `run_example.bat`) |
+| `cannot join thread before it is started` | Py3.12 + Windows `ThreadPoolExecutor` shutdown race | Patches in `traj_generate.py` + `inference_utils.py` (already applied) |
+| `no kernel image is available for execution on the device` | gsplat compiled without sm_120 | Recompile with `TORCH_CUDA_ARCH_LIST=8.6;8.9;9.0;12.0+PTX` (`compile_gsplat.bat --clean`) |
+| `where cl returned non-zero` | MSVC not on PATH for the JIT compile subprocess | `run_example.bat` sources `vcvars64.bat` at the top now |
+| WorldStereo not downloaded | Stage 3 tries pull from HF on first run | `huggingface-cli download hanshanxue/WorldStereo` (or let Stage 3 do it; ~15-30 GB one-time) |
+| VLM connection refused | Qwen3-VL server not running on `LLM_ADDR:LLM_PORT` | `run_example.bat --module worldgen` auto-starts it; or `start_vlm.bat` manually |

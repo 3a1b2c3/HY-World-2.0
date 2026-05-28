@@ -25,6 +25,36 @@ setlocal enableextensions enabledelayedexpansion
 cd /d "%~dp0"
 call .venv\Scripts\activate.bat
 
+:: --- MSVC + CUDA env for gsplat JIT compile ---
+:: gsplat_maskgaussian doesn't ship a precompiled .pyd — it JIT-compiles the
+:: CUDA backend on first import via torch.utils.cpp_extension. That subprocess
+:: runs `where cl` to find MSVC, and fails if cl.exe isn't on PATH. We source
+:: vcvars64.bat once here so every python subprocess this bat spawns can
+:: compile if needed. Set HY_NO_VCVARS=1 to skip (faster startup if you know
+:: gsplat is already built and cached).
+if not defined HY_NO_VCVARS (
+    if "!VCINSTALLDIR!"=="" (
+        set "INCLUDE="
+        set "LIB="
+        set "LIBPATH="
+        set "VCVARS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+        if exist "!VCVARS!" (
+            call "!VCVARS!" >nul 2>&1
+        ) else (
+            echo WARN: vcvars64.bat not found at !VCVARS!. gsplat JIT compile will fail if not cached.
+        )
+    )
+)
+:: Compile for Blackwell (RTX 5090 sm_120) + common older arches. Without this
+:: the JIT-compiled gsplat kernels fail at runtime with "no kernel image is
+:: available for execution on the device" on a 5090.
+if not defined TORCH_CUDA_ARCH_LIST set "TORCH_CUDA_ARCH_LIST=8.6;8.9;9.0;12.0+PTX"
+if not defined CUDA_HOME set "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+:: nvcc on Windows uses 6-8 GB RAM per CUDA kernel compile. gsplat defaults
+:: MAX_JOBS=10 — on a 64 GB box that can OOM-kill mid-compile, leaving a
+:: corrupt ninja cache. Cap at 2 for safety; bump if you have lots of RAM.
+if not defined MAX_JOBS set "MAX_JOBS=2"
+
 :: --- Windows env tweaks ---
 :: PyTorch Win wheels are built without libuv. Without this, torch.distributed
 :: TCPStore init crashes Stage 2 with "use_libuv was requested but PyTorch was
@@ -118,6 +148,24 @@ if not exist "%HY_WG_TARGET_PATH%" (
     exit /b 2
 )
 if not exist "%HY_WG_RESULT_DIR%" mkdir "%HY_WG_RESULT_DIR%" 2>nul
+
+:: Pre-flight: WorldStereo must be in the HF cache before Stage 3 starts.
+:: Without this, Stages 1-2 burn 3-5 min before Stage 3 crashes on a missing
+:: model. Skip with HY_NO_WORLDSTEREO_CHECK=1.
+if not defined HY_NO_WORLDSTEREO_CHECK (
+    if not defined HY_WORLDSTEREO_VARIANT set HY_WORLDSTEREO_VARIANT=worldstereo-memory-dmd
+    python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('hanshanxue/WorldStereo', allow_patterns=['%HY_WORLDSTEREO_VARIANT%/*.json'], local_files_only=True)" >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ERROR: hanshanxue/WorldStereo ^(%HY_WORLDSTEREO_VARIANT%^) not in HF cache.
+        echo Stage 3 would fail mid-pipeline. Pre-fetch first:
+        echo   python download_models.py --worldstereo
+        echo Or run the full setup again:
+        echo   setup.bat
+        echo Skip this check with: set HY_NO_WORLDSTEREO_CHECK=1
+        exit /b 2
+    )
+)
 
 :: stage-5 max_steps auto-scale by GPU count when user didn't pin it.
 if not defined HY_WG_MAX_STEPS (
@@ -230,13 +278,19 @@ if not exist "%PLY%" (
     exit /b 2
 )
 
-:: show_gs.py requires position_meta_info.json next to the .ply (up/facing/
-:: center directions). worldgen Stage 5 writes it; worldrecon does not.
-:: Synthesize a default if missing so worldrecon outputs are viewable.
+:: show_gs.py requires position_meta_info.json next to the .ply (camera
+:: position, look-at target, up-vector). worldgen Stage 5 writes it;
+:: worldrecon does not. Synthesize one by computing the actual centroid +
+:: bbox diagonal from the .ply — a literal default (camera at origin) places
+:: the viewer INSIDE the gaussian cloud and renders black.
 for %%I in ("%PLY%") do set "PLY_DIR=%%~dpI"
 if not exist "%PLY_DIR%position_meta_info.json" (
-    echo [viewer] position_meta_info.json missing -- writing default ^(up=+Y, facing=-Z^)
-    > "%PLY_DIR%position_meta_info.json" echo {"up_direction":[0,1,0],"facing_direction":[0,0,-1],"center_point":[0,0,0]}
+    echo [viewer] position_meta_info.json missing -- computing from %PLY%
+    python hyworld2\worldgen\write_position_meta.py "%PLY%"
+    if errorlevel 1 (
+        echo WARN: write_position_meta.py failed; using safe default
+        > "%PLY_DIR%position_meta_info.json" echo {"up_direction":[0,1,0],"facing_direction":[0,0,0],"center_point":[0,0,5]}
+    )
 )
 
 echo   ply  : %PLY%
