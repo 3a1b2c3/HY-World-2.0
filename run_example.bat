@@ -5,6 +5,8 @@
 ::   --module worldrecon   WorldMirror 2.0 reconstruction (Park example). Default.
 ::   --module panogen      HY-Pano-2.0 panorama generation.
 ::   --module worldgen     WorldStereo + WorldNav 5-stage pipeline.
+::   --module viewer       Open the latest gaussians.ply in show_gs.py web viewer.
+::                         Override file with HY_VIEW_PLY, port with HY_VIEW_PORT (default 8081).
 ::   --module all          Run worldrecon, then panogen, then worldgen (if prereqs set).
 ::
 :: panogen prereqs:
@@ -23,6 +25,21 @@ setlocal enableextensions enabledelayedexpansion
 cd /d "%~dp0"
 call .venv\Scripts\activate.bat
 
+:: --- Windows env tweaks ---
+:: PyTorch Win wheels are built without libuv. Without this, torch.distributed
+:: TCPStore init crashes Stage 2 with "use_libuv was requested but PyTorch was
+:: built without libuv support".
+set "USE_LIBUV=0"
+set "TORCH_TCPSTORE_USE_LIBUV=0"
+:: gloo can't auto-pick a Windows NIC; nudge it at a real adapter.
+if not defined GLOO_SOCKET_IFNAME set "GLOO_SOCKET_IFNAME=Wi-Fi"
+:: transformers' async shard loader segfaults on Win + sm_120 mid-shard.
+set "HF_DEACTIVATE_ASYNC_LOAD=1"
+:: hf_transfer's mmap buffers compete with the DiT mmap for Win address space.
+set "HF_HUB_ENABLE_HF_TRANSFER=0"
+:: UTF-8 stdio so any unicode print doesn't crash cp1252.
+set "PYTHONIOENCODING=utf-8"
+
 set MODULE=all
 :parse_args
 if "%~1"=="" goto args_done
@@ -37,7 +54,8 @@ if /I "%MODULE%"=="all"        goto run_all
 if /I "%MODULE%"=="worldrecon" goto run_worldrecon
 if /I "%MODULE%"=="panogen"    goto run_panogen
 if /I "%MODULE%"=="worldgen"   goto run_worldgen
-echo ERROR: unknown module %MODULE%. Use worldrecon ^| panogen ^| worldgen ^| all.
+if /I "%MODULE%"=="viewer"     goto run_viewer
+echo ERROR: unknown module %MODULE%. Use worldrecon ^| panogen ^| worldgen ^| viewer ^| all.
 exit /b 2
 
 
@@ -46,9 +64,16 @@ echo === WorldMirror 2.0 reconstruction (examples\worldrecon\realistic\Park) ===
 :: Point at the local checkpoint dir from setup step 7 (download_models.py).
 :: Without this, pipeline.py falls through to HuggingFace snapshot_download
 :: which re-pulls the 5 GB HY-WorldMirror-2.0 weights into ~/.cache (filling C:).
-python -m hyworld2.worldrecon.pipeline --pretrained_model_name_or_path "%~dp0checkpoint" --subfolder HY-WorldMirror-2.0 --input_path examples\worldrecon\realistic\Park --output_path output\park --save_rendered --render_interp_per_pair 15 --enable_bf16
+:: NOTE: download_models.py wrote the checkpoint nested as
+:: checkpoint/HY-WorldMirror-2.0/HY-WorldMirror-2.0/{config.json,model.safetensors}.
+:: Point at the outer HY-WorldMirror-2.0 dir so --subfolder=HY-WorldMirror-2.0
+:: resolves into the inner one (where the actual model files live).
+python -m hyworld2.worldrecon.pipeline --pretrained_model_name_or_path "%~dp0checkpoint\HY-WorldMirror-2.0" --subfolder HY-WorldMirror-2.0 --input_path examples\worldrecon\realistic\Park --output_path output\park --save_rendered --render_interp_per_pair 15 --enable_bf16 --no_interactive
 if errorlevel 1 ( echo FAIL worldrecon rc=%ERRORLEVEL% & exit /b %ERRORLEVEL% )
-if /I not "%MODULE%"=="all" exit /b 0
+if /I not "%MODULE%"=="all" (
+    if not defined HY_NO_AUTO_VIEW goto run_viewer
+    exit /b 0
+)
 
 
 :run_panogen
@@ -114,6 +139,37 @@ echo   max_steps   : %HY_WG_MAX_STEPS%
 echo   vLLM        : http://%LLM_ADDR%:%LLM_PORT%  (%LLM_NAME%)
 echo.
 
+:: --- VLM auto-start ---
+:: traj_generate / video_gen call out to the Qwen3-VL server at LLM_ADDR:LLM_PORT.
+:: Check if something's listening; if not, spawn start_vlm.bat in a new window
+:: and poll until ready. Set HY_NO_AUTO_VLM=1 to skip (e.g. if you started it
+:: manually or are running against a remote LLM).
+if not defined HY_NO_AUTO_VLM (
+    powershell -NoProfile -Command "$c=New-Object System.Net.Sockets.TcpClient; try { $c.Connect('%LLM_ADDR%', %LLM_PORT%); exit 0 } catch { exit 1 } finally { $c.Close() }" >nul 2>&1
+    if errorlevel 1 (
+        echo [VLM] Not running on %LLM_ADDR%:%LLM_PORT% -- starting via start_vlm.bat in new window...
+        start "HY-VLM :%LLM_PORT%" cmd /k "%~dp0start_vlm.bat"
+        echo [VLM] Polling for readiness ^(up to 5 min^)...
+        set VLM_READY=0
+        for /L %%i in (1,1,150) do (
+            if !VLM_READY!==0 (
+                powershell -NoProfile -Command "$c=New-Object System.Net.Sockets.TcpClient; try { $c.Connect('%LLM_ADDR%', %LLM_PORT%); exit 0 } catch { exit 1 } finally { $c.Close() }" >nul 2>&1
+                if !errorlevel!==0 ( set VLM_READY=1 & echo [VLM] Ready after %%i x2s )
+                if !VLM_READY!==0 timeout /t 2 /nobreak >nul 2>&1
+            )
+        )
+        if !VLM_READY!==0 (
+            echo [VLM] FAIL: server did not come up within 5 min. Check the "HY-VLM :%LLM_PORT%" window for errors.
+            echo [VLM] To skip auto-start next time: set HY_NO_AUTO_VLM=1
+            exit /b 1
+        )
+    ) else (
+        echo [VLM] Already running on %LLM_ADDR%:%LLM_PORT% -- skipping start_vlm.bat
+    )
+) else (
+    echo [VLM] HY_NO_AUTO_VLM=1 set; skipping auto-start ^(assuming external VLM^)
+)
+
 pushd hyworld2\worldgen
 
 echo --- Stage 1/5: Trajectory Planning (traj_generate.py) ---
@@ -142,8 +198,8 @@ if not %RC%==0 ( echo FAIL stage5 rc=%RC% & exit /b %RC% )
 echo.
 echo ============================================================
 echo worldgen done. Inspect %HY_WG_RESULT_DIR% (.ply / .spz / mesh).
-echo Viewer:  pushd hyworld2\worldgen ^&^& python show_gs.py --port 8081 --gpu_id 0 --ckpt "%HY_WG_RESULT_DIR%\ckpts\ckpt_*_rank*.pt"
 echo ============================================================
+if not defined HY_NO_AUTO_VIEW goto run_viewer
 exit /b 0
 
 
@@ -152,10 +208,75 @@ if /I "%MODULE%"=="all" goto run_worldgen
 exit /b 0
 
 
+:run_viewer
+echo.
+echo === Splat viewer (show_gs.py) ===
+:: Find the most recent gaussians.ply in output/. cmd's dir /o-d sorts only
+:: within each subdir of a recursive walk, not globally — use PowerShell to
+:: get a real mtime-sorted result. Override HY_VIEW_PLY to pin a specific file.
+if not defined HY_VIEW_PORT set HY_VIEW_PORT=8081
+if defined HY_VIEW_PLY (
+    set "PLY=%HY_VIEW_PLY%"
+) else (
+    for /f "delims=" %%P in ('powershell -NoProfile -Command "Get-ChildItem -Path '%~dp0output' -Recurse -Filter gaussians.ply 2>$null | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName"') do set "PLY=%%P"
+)
+if not defined PLY (
+    echo ERROR: no gaussians.ply found under %~dp0output\.
+    echo   Run worldrecon or worldgen first, or set HY_VIEW_PLY=^<path^> manually.
+    exit /b 2
+)
+if not exist "%PLY%" (
+    echo ERROR: PLY not found: %PLY%
+    exit /b 2
+)
+
+:: show_gs.py requires position_meta_info.json next to the .ply (up/facing/
+:: center directions). worldgen Stage 5 writes it; worldrecon does not.
+:: Synthesize a default if missing so worldrecon outputs are viewable.
+for %%I in ("%PLY%") do set "PLY_DIR=%%~dpI"
+if not exist "%PLY_DIR%position_meta_info.json" (
+    echo [viewer] position_meta_info.json missing -- writing default ^(up=+Y, facing=-Z^)
+    > "%PLY_DIR%position_meta_info.json" echo {"up_direction":[0,1,0],"facing_direction":[0,0,-1],"center_point":[0,0,0]}
+)
+
+echo   ply  : %PLY%
+echo   port : %HY_VIEW_PORT%
+echo.
+echo Open in your browser:  http://localhost:%HY_VIEW_PORT%/
+echo Ctrl+C to stop.
+echo.
+
+:: Open the browser tab a couple seconds after the server starts.
+start "" cmd /c "timeout /t 4 /nobreak >nul & start http://localhost:%HY_VIEW_PORT%/"
+:: Run viewer in foreground so Ctrl+C kills it.
+pushd hyworld2\worldgen
+python show_gs.py --ckpt "%PLY%" --port %HY_VIEW_PORT% --gpu_id 0
+set RC=%ERRORLEVEL%
+popd
+exit /b %RC%
+
+
 :run_all
+:: Fail on first error — don't run later modules if an earlier one died.
+:: Set HY_NO_AUTO_VIEW=1 to skip the splat viewer at the end.
+:: We suppress auto-view for individual modules inside :run_all because we
+:: want it to fire ONCE at the very end (after worldgen).
+set _SAVED_HY_NO_AUTO_VIEW=%HY_NO_AUTO_VIEW%
+set HY_NO_AUTO_VIEW=1
 call :run_worldrecon
+if errorlevel 1 ( echo ABORT: worldrecon failed; skipping panogen + worldgen & exit /b %ERRORLEVEL% )
 call :run_panogen
+if errorlevel 1 ( echo ABORT: panogen failed; skipping worldgen & exit /b %ERRORLEVEL% )
 call :run_worldgen
+set RC=%ERRORLEVEL%
+:: Restore user's setting before final auto-view.
+if defined _SAVED_HY_NO_AUTO_VIEW (
+    set "HY_NO_AUTO_VIEW=%_SAVED_HY_NO_AUTO_VIEW%"
+) else (
+    set "HY_NO_AUTO_VIEW="
+)
+if not %RC%==0 exit /b %RC%
+if not defined HY_NO_AUTO_VIEW goto run_viewer
 exit /b 0
 
 endlocal

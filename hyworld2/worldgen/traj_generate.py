@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from glob import glob
 
@@ -449,13 +450,24 @@ if __name__ == '__main__':
                 save_tasks.append(('depth', depth.cpu().numpy(), f"{scene_path}/render_results/polar_bank/depths/{fname}.png"))
 
             if save_tasks:
-                with ThreadPoolExecutor(max_workers=16) as executor:
-                    futures = [
-                        executor.submit(save_image if task[0] == 'image' else save_depth, task[1], task[2])
-                        for task in save_tasks
-                    ]
-                    for future in futures:
-                        future.result()
+                # Serial saves — ThreadPoolExecutor hits the Python 3.12 +
+                # Windows atexit bug ("cannot join thread before it is
+                # started") under load. PNG writes are fast enough sequentially.
+                _t_save = time.time()
+                _n_save = len(save_tasks)
+                for _idx, (kind, data, path) in enumerate(save_tasks, 1):
+                    try:
+                        if kind == 'image':
+                            save_image(data, path)
+                        else:
+                            save_depth(data, path)
+                    except Exception as _e:
+                        print(f"  [save_tasks] FAIL [{_idx}/{_n_save}] {kind} -> {path}: "
+                              f"{type(_e).__name__}: {_e}", flush=True)
+                        raise
+                    if _idx % max(1, _n_save // 4) == 0 or _idx == _n_save:
+                        print(f"  [save_tasks] {_idx}/{_n_save} ({(_idx/_n_save)*100:.0f}%) "
+                              f"elapsed {time.time() - _t_save:.1f}s", flush=True)
 
             with open(f"{scene_path}/render_results/polar_bank/cameras.json", "w") as w:
                 json.dump(bank_cameras, w)
@@ -504,13 +516,24 @@ if __name__ == '__main__':
                 save_tasks.append(('depth', depth.cpu().numpy(), f"{scene_path}/render_results/pano_bank/depths/{fname}.png"))
 
             if save_tasks:
-                with ThreadPoolExecutor(max_workers=16) as executor:
-                    futures = [
-                        executor.submit(save_image if task[0] == 'image' else save_depth, task[1], task[2])
-                        for task in save_tasks
-                    ]
-                    for future in futures:
-                        future.result()
+                # Serial saves — ThreadPoolExecutor hits the Python 3.12 +
+                # Windows atexit bug ("cannot join thread before it is
+                # started") under load. PNG writes are fast enough sequentially.
+                _t_save = time.time()
+                _n_save = len(save_tasks)
+                for _idx, (kind, data, path) in enumerate(save_tasks, 1):
+                    try:
+                        if kind == 'image':
+                            save_image(data, path)
+                        else:
+                            save_depth(data, path)
+                    except Exception as _e:
+                        print(f"  [save_tasks] FAIL [{_idx}/{_n_save}] {kind} -> {path}: "
+                              f"{type(_e).__name__}: {_e}", flush=True)
+                        raise
+                    if _idx % max(1, _n_save // 4) == 0 or _idx == _n_save:
+                        print(f"  [save_tasks] {_idx}/{_n_save} ({(_idx/_n_save)*100:.0f}%) "
+                              f"elapsed {time.time() - _t_save:.1f}s", flush=True)
 
             with open(f"{scene_path}/render_results/pano_bank/cameras.json", "w") as w:
                 json.dump(bank_cameras, w)
@@ -595,11 +618,21 @@ if __name__ == '__main__':
                 io_save_tasks.append((i, scene_path, projected_pcd, point_mask_img, projected_uv, splitted_image))
 
         if io_save_tasks:
-            with timer.track("[IO] Save all views initial data (parallel)"):
-                with ThreadPoolExecutor(max_workers=min(len(io_save_tasks), 16)) as io_executor:
-                    io_futures = [io_executor.submit(save_view_initial_data, task) for task in io_save_tasks]
-                    for future in as_completed(io_futures):
-                        future.result()
+            with timer.track("[IO] Save all views initial data (serial)"):
+                # ThreadPoolExecutor hits the Python 3.12 + Windows atexit
+                # bug ("cannot join thread before it is started"). Serial is
+                # slower but reliable; per-view save is small.
+                _t_io = time.time()
+                _n_io = len(io_save_tasks)
+                for _idx, task in enumerate(io_save_tasks, 1):
+                    try:
+                        view_i = save_view_initial_data(task)
+                    except Exception as _e:
+                        print(f"  [io_save_tasks] FAIL [{_idx}/{_n_io}]: "
+                              f"{type(_e).__name__}: {_e}", flush=True)
+                        raise
+                    print(f"  [io_save_tasks] {_idx}/{_n_io} view={view_i} "
+                          f"elapsed {time.time() - _t_io:.1f}s", flush=True)
 
         with timer.track("Plan regular trajectories"):
             total_trajectories = 0
