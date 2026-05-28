@@ -102,7 +102,13 @@ def build_app(model_path: str, device: str = "cuda", dtype: str = "bfloat16"):
     app = FastAPI()
 
     @app.post("/v1/chat/completions")
-    def chat(req: ChatRequest):
+    async def chat(req: ChatRequest):
+        # async def so FastAPI runs the handler on the event loop directly,
+        # bypassing anyio's thread pool entirely. We only ever process one
+        # request at a time (model.generate is blocking), so the loop blocking
+        # is fine. Avoids the Windows handle-leak in anyio.to_thread that
+        # raises ``RuntimeError: can't allocate lock`` after enough requests
+        # even with thread_limiter.total_tokens capped.
         qwen_msgs, images = _to_qwen_messages(req.messages)
 
         text = processor.apply_chat_template(qwen_msgs, tokenize=False, add_generation_prompt=True)
@@ -161,18 +167,22 @@ def main():
 
     app = build_app(args.model_path, device=args.device, dtype=args.dtype)
 
-    # Shrink anyio's thread-pool. FastAPI runs sync handlers (our /v1/chat/
-    # completions is a `def`, not `async def`) in anyio's worker pool, which
-    # defaults to 40 threads + their lock primitives. On Windows with Qwen3-VL
-    # already resident this leaks enough locks/handles to eventually hit
-    # ``RuntimeError: can't allocate lock``. We only ever process one request
-    # at a time anyway (model.generate is blocking), so 2 tokens is enough.
-    @app.on_event("startup")
-    async def _cap_thread_pool():
-        import anyio.to_thread
-        anyio.to_thread.current_default_thread_limiter().total_tokens = 2
-
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # Run on the asyncio loop (not uvloop, which has no Windows support anyway),
+    # disable the lifespan protocol (avoids spinning up additional anyio worker
+    # threads for startup/shutdown events), and cap concurrency to 1 so the
+    # blocking inference path can't be re-entered. Together with the async
+    # endpoint above, these eliminate the Windows handle leak that triggered
+    # ``RuntimeError: can't allocate lock`` after enough VLM calls.
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        loop="asyncio",
+        lifespan="off",
+        limit_concurrency=1,
+        timeout_graceful_shutdown=2,
+    )
 
 
 if __name__ == "__main__":
