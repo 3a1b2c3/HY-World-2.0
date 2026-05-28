@@ -87,8 +87,11 @@ if __name__ == '__main__':
     local_rank = int(os.getenv("LOCAL_RANK", 0))
     device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(local_rank)
+    # NCCL is Linux-only; fall back to gloo on Windows.
+    import sys as _sys
+    _backend = "cpu:gloo,cuda:nccl" if _sys.platform != "win32" else "gloo"
     dist.init_process_group(
-        backend="cpu:gloo,cuda:nccl",
+        backend=_backend,
         rank=rank,
         world_size=world_size,
     )
