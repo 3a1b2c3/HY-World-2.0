@@ -104,6 +104,10 @@ if /I not "%MODULE%"=="all" (
     if not defined HY_NO_AUTO_VIEW goto run_viewer
     exit /b 0
 )
+:: MODULE==all reaches here only via `call :run_worldrecon` from :run_all.
+:: Must exit /b instead of falling through — otherwise the call runs panogen
+:: + worldgen too, and :run_all attributes their rc to worldrecon.
+exit /b 0
 
 
 :run_panogen
@@ -111,12 +115,12 @@ echo.
 echo === HY-Pano 2.0 panorama generation ===
 if not defined HY_PANO_MODEL_DIR (
     echo SKIP panogen: HY_PANO_MODEL_DIR not set ^(point at HY-Pano-2.0 weights^).
-    if /I "%MODULE%"=="all" goto :run_worldgen_if_all
+    if /I "%MODULE%"=="all" exit /b 0
     exit /b 2
 )
 if not defined HY_PANO_INPUT_PNG (
     echo SKIP panogen: HY_PANO_INPUT_PNG not set ^(point at an input image^).
-    if /I "%MODULE%"=="all" goto :run_worldgen_if_all
+    if /I "%MODULE%"=="all" exit /b 0
     exit /b 2
 )
 if not defined HY_PANO_PROMPT set HY_PANO_PROMPT=Expand this image to a 360-degree equirectangular panorama. Maintain realistic style.
@@ -125,8 +129,10 @@ python pipeline.py --pretrained-model-name-or-path "%HY_PANO_MODEL_DIR%" --subfo
 set RC=%ERRORLEVEL%
 popd
 if not %RC%==0 ( echo FAIL panogen rc=%RC% & exit /b %RC% )
-if /I not "%MODULE%"=="all" exit /b 0
-goto :run_worldgen_if_all
+:: MODULE==all reaches here only via `call :run_panogen` from :run_all.
+:: Must exit /b instead of falling through to worldgen — :run_all calls
+:: worldgen separately as the next step.
+exit /b 0
 
 
 :run_worldgen
@@ -171,10 +177,12 @@ if not defined HY_NO_WORLDSTEREO_CHECK (
 :: install on Windows gives a CPU-only build, which makes Stage 2's
 :: multi_gpu_point_rendering crash with "Not compiled with GPU support" from
 :: rasterize_points after Stage 1 has already spent ~1-2 min running.
-:: PackedToPaddedCuda only exists in pytorch3d._C when CUDA was compiled in.
+:: The probe exercises a real CUDA rasterize_points call (current pytorch3d
+:: dispatches CPU/CUDA inside one exported function — there's no top-level
+:: symbol to hasattr-check).
 :: Skip with HY_NO_PYTORCH3D_CHECK=1.
 if not defined HY_NO_PYTORCH3D_CHECK (
-    python -c "from pytorch3d import _C; assert hasattr(_C, 'PackedToPaddedCuda'), 'no CUDA'" >nul 2>&1
+    python "%~dp0tests\probe_pytorch3d_cuda.py" >nul 2>&1
     if errorlevel 1 (
         echo.
         echo ERROR: pytorch3d is missing CUDA support ^(or not installed^).

@@ -86,7 +86,7 @@ if not %RC%==0 (
 
 echo.
 echo --- verifying CUDA support ---
-"%~dp0.venv\Scripts\python.exe" -c "import torch; from pytorch3d import _C; print('pytorch3d CUDA OK:', hasattr(_C, 'PackedToPaddedCuda'))"
+"%~dp0.venv\Scripts\python.exe" "%~dp0tests\probe_pytorch3d_cuda.py"
 set RC=%ERRORLEVEL%
 if not %RC%==0 (
     echo === FAIL: pytorch3d imported but CUDA path not present ===
