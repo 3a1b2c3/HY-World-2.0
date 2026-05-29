@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from glob import glob
 
@@ -67,8 +68,12 @@ if __name__ == '__main__':
     device = torch.device(f"cuda:{local_rank}")
     device_num = torch.cuda.device_count()
     torch.cuda.set_device(local_rank)
+    # NCCL is Linux-only; PyTorch Windows wheels are built without it. Fall
+    # back to all-gloo on Windows. Single-GPU rasterization doesn't need
+    # nccl's perf anyway.
+    _backend = "cpu:gloo,cuda:nccl" if sys.platform != "win32" else "gloo"
     dist.init_process_group(
-        backend="cpu:gloo,cuda:nccl",
+        backend=_backend,
         rank=rank,
         world_size=world_size,
     )
@@ -98,7 +103,13 @@ if __name__ == '__main__':
 
             with open(f"{traj_path}/camera.json", "r") as f:
                 camera_info = json.load(f)
-            view_id, traj_id = traj_path.split('/')[-2], traj_path.split('/')[-1]
+            # Use pathlib so Windows '\' separators work — the bare
+            # split('/') below returned the whole path as view_id and
+            # built a malformed image_path like
+            # ".../render_results/C:\.../start_frame.png".
+            from pathlib import Path as _P
+            _tp = _P(traj_path)
+            view_id, traj_id = _tp.parent.name, _tp.name
             image_path = f"{scene_path}/render_results/{view_id}/start_frame.png"
             splitted_image = Image.open(image_path)
             image_w, image_h = splitted_image.size

@@ -1,5 +1,15 @@
 # These packages require building from source.
 # Install AFTER requirements.txt, with: pip install --no-build-isolation -r requirements_git.txt
+#
+# utils3d MUST be installed BEFORE MoGe (and listed first here). PyPI has an
+# unrelated "utils3d" stub package at v0.1.3 that gets pulled in transitively
+# and shadows the real one — its `.numpy` submodule is empty, so any call to
+# utils3d.numpy.icosahedron / .intrinsics_from_fov / .extrinsics_look_at /
+# .image_uv / .depth_edge crashes with AttributeError (see panorama_utils.py:37
+# and gen_gs_data.py 147/340/342/417/472). Installing the real one from
+# EasternJournalist first wins the version race; --no-deps below stops MoGe
+# from clobbering it on its way in.
+git+https://github.com/EasternJournalist/utils3d.git@c5daf6f6c244d251f252102d09e9b7bcef791a38
 git+https://github.com/nerfstudio-project/nerfview@4538024fe0d15fd1a0e4d760f3695fc44ca72787
 git+https://github.com/rahul-goel/fused-ssim@328dc9836f513d00c4b5bc38fe30478b4435cbb5
 git+https://github.com/nianticlabs/spz.git@v3.0.0
