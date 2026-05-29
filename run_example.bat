@@ -2,12 +2,22 @@
 :: Run every HY-World 2.0 example end-to-end.
 ::
 :: Modules:
-::   --module worldrecon   WorldMirror 2.0 reconstruction (Park example). Default.
+::   --module worldrecon   WorldMirror 2.0 reconstruction.
+::                         Default: iterate all 22 examples
+::                         (realistic\* + stylistic\*).
+::                         Override with HY_RECON_INPUT=<one_scene_dir>.
 ::   --module panogen      HY-Pano-2.0 panorama generation.
 ::   --module worldgen     WorldStereo + WorldNav 5-stage pipeline.
+::                         Default: examples\worldgen\case000 (single case).
+::                         For both cases: set HY_WG_TARGET_PATH=examples\worldgen
+::                         (or HY_WG_ALL_CASES=1).
 ::   --module viewer       Open the latest gaussians.ply in show_gs.py web viewer.
 ::                         Override file with HY_VIEW_PLY, port with HY_VIEW_PORT (default 8081).
 ::   --module all          Run worldrecon, then panogen, then worldgen (if prereqs set).
+::
+:: worldrecon prereqs:
+::   set HY_RECON_INPUT=examples\worldrecon\realistic\Park   (optional, runs just this one)
+::   set HY_RECON_INPUT_PARENT=examples\worldrecon           (optional, dir to iterate)
 ::
 :: panogen prereqs:
 ::   set HY_PANO_MODEL_DIR=C:\models\HY-Pano-2.0
@@ -19,6 +29,7 @@
 ::   set HY_WG_TARGET_PATH=examples\worldgen\case000   (default)
 ::   set HY_WG_RESULT_DIR=output\worldgen              (default)
 ::   set HY_WG_GPUS=1                                  (default 1)
+::   set HY_WG_ALL_CASES=1                             (shortcut for both cases)
 ::   set LLM_ADDR=0.0.0.0 LLM_PORT=8000 LLM_NAME=Qwen/Qwen3-VL-8B-Instruct
 
 setlocal enableextensions enabledelayedexpansion
@@ -90,7 +101,7 @@ exit /b 2
 
 
 :run_worldrecon
-echo === WorldMirror 2.0 reconstruction (examples\worldrecon\realistic\Park) ===
+echo === WorldMirror 2.0 reconstruction ===
 :: Point at the local checkpoint dir from setup step 7 (download_models.py).
 :: Without this, pipeline.py falls through to HuggingFace snapshot_download
 :: which re-pulls the 5 GB HY-WorldMirror-2.0 weights into ~/.cache (filling C:).
@@ -98,8 +109,36 @@ echo === WorldMirror 2.0 reconstruction (examples\worldrecon\realistic\Park) ===
 :: checkpoint/HY-WorldMirror-2.0/HY-WorldMirror-2.0/{config.json,model.safetensors}.
 :: Point at the outer HY-WorldMirror-2.0 dir so --subfolder=HY-WorldMirror-2.0
 :: resolves into the inner one (where the actual model files live).
-python -m hyworld2.worldrecon.pipeline --pretrained_model_name_or_path "%~dp0checkpoint\HY-WorldMirror-2.0" --subfolder HY-WorldMirror-2.0 --input_path examples\worldrecon\realistic\Park --output_path output\park --save_rendered --render_interp_per_pair 15 --enable_bf16 --no_interactive
-if errorlevel 1 ( echo FAIL worldrecon rc=%ERRORLEVEL% & exit /b %ERRORLEVEL% )
+set "RECON_CKPT=%~dp0checkpoint\HY-WorldMirror-2.0"
+set "RECON_OK_COUNT=0"
+set "RECON_FAIL_COUNT=0"
+set "RECON_FAIL_RC=0"
+
+if defined HY_RECON_INPUT (
+    echo   single scene: %HY_RECON_INPUT%
+    call :_recon_one "%HY_RECON_INPUT%"
+    goto :_recon_summary
+)
+
+if not defined HY_RECON_INPUT_PARENT set "HY_RECON_INPUT_PARENT=%~dp0examples\worldrecon"
+echo   iterating   : %HY_RECON_INPUT_PARENT%\{realistic,stylistic}\*
+echo   checkpoint  : %RECON_CKPT%
+echo.
+for %%C in (realistic stylistic) do (
+    if exist "%HY_RECON_INPUT_PARENT%\%%C\" (
+        for /D %%D in ("%HY_RECON_INPUT_PARENT%\%%C\*") do (
+            call :_recon_one "%%~fD"
+        )
+    )
+)
+
+:_recon_summary
+echo.
+echo === worldrecon: !RECON_OK_COUNT! OK / !RECON_FAIL_COUNT! FAIL ===
+if not "!RECON_FAIL_RC!"=="0" (
+    echo FAIL worldrecon rc=!RECON_FAIL_RC! ^(first failure^)
+    exit /b !RECON_FAIL_RC!
+)
 if /I not "%MODULE%"=="all" (
     if not defined HY_NO_AUTO_VIEW goto run_viewer
     exit /b 0
@@ -107,6 +146,23 @@ if /I not "%MODULE%"=="all" (
 :: MODULE==all reaches here only via `call :run_worldrecon` from :run_all.
 :: Must exit /b instead of falling through — otherwise the call runs panogen
 :: + worldgen too, and :run_all attributes their rc to worldrecon.
+exit /b 0
+
+:_recon_one
+:: %1 = scene dir (absolute). Output goes to output\<scene_name>.
+set "_S=%~1"
+set "_NAME=%~nx1"
+set "_OUT=output\!_NAME!"
+echo --- recon: !_NAME!  -^>  !_OUT! ---
+python -m hyworld2.worldrecon.pipeline --pretrained_model_name_or_path "%RECON_CKPT%" --subfolder HY-WorldMirror-2.0 --input_path "!_S!" --output_path "!_OUT!" --save_rendered --render_interp_per_pair 30 --enable_bf16 --no_interactive
+set "_RC=!ERRORLEVEL!"
+if not "!_RC!"=="0" (
+    set /A RECON_FAIL_COUNT+=1
+    if "!RECON_FAIL_RC!"=="0" set "RECON_FAIL_RC=!_RC!"
+    echo WARN: worldrecon failed on !_NAME! ^(rc=!_RC!^); continuing
+) else (
+    set /A RECON_OK_COUNT+=1
+)
 exit /b 0
 
 
@@ -138,6 +194,12 @@ exit /b 0
 :run_worldgen
 echo.
 echo === HY-World 2.0 world generation (5-stage pipeline) ===
+:: HY_WG_ALL_CASES=1 expands to the parent dir so traj_render globs both
+:: cases in examples\worldgen\* (currently case000 + case001). Doesn't
+:: override an explicit HY_WG_TARGET_PATH.
+if defined HY_WG_ALL_CASES (
+    if not defined HY_WG_TARGET_PATH set HY_WG_TARGET_PATH=%~dp0examples\worldgen
+)
 if not defined HY_WG_TARGET_PATH set HY_WG_TARGET_PATH=%~dp0examples\worldgen\case000
 if not defined HY_WG_RESULT_DIR  set HY_WG_RESULT_DIR=%~dp0output\worldgen
 if not defined HY_WG_GPUS        set HY_WG_GPUS=1
@@ -268,7 +330,7 @@ torchrun --nproc_per_node %HY_WG_GPUS% gen_gs_data.py --root_path "%HY_WG_TARGET
 if errorlevel 1 ( set RC=%ERRORLEVEL% & echo FAIL stage4 rc=!RC! & popd & exit /b !RC! )
 
 echo --- Stage 5/5: 3DGS Training (world_gs_trainer) ---
-python -m world_gs_trainer default --data_dir "%HY_WG_TARGET_PATH%\gs_data" --result_dir "%HY_WG_RESULT_DIR%" --max_steps %HY_WG_MAX_STEPS% --save_steps %HY_WG_MAX_STEPS% --eval_steps %HY_WG_MAX_STEPS% --ply_steps %HY_WG_MAX_STEPS% --save_ply --convert_to_spz --disable_video --use_scale_regularization --antialiased --depth_loss --normal_loss --sky_depth_from_pcd --use_mask_gaussian --mask_export_stochastic --no-mask-export-anchor-protection --use_anchor_protection --export_mesh --strategy.refine-start-iter 150 --strategy.refine-stop-iter 750 --strategy.refine-every 100 --strategy.refine-scale2d-stop-iter 750 --strategy.reset-every 99990 --strategy.grow-grad2d 0.0001 --strategy.prune-scale3d 0.1
+python -m world_gs_trainer default --data_dir "%HY_WG_TARGET_PATH%\gs_data" --result_dir "%HY_WG_RESULT_DIR%" --max_steps %HY_WG_MAX_STEPS% --save_steps %HY_WG_MAX_STEPS% --eval_steps %HY_WG_MAX_STEPS% --ply_steps %HY_WG_MAX_STEPS% --save_ply --convert_to_spz --disable_video --use_scale_regularization --antialiased --depth_loss --normal_loss --sky_depth_from_pcd --use_mask_gaussian --mask_export_stochastic --no-mask-export-anchor-protection --use_anchor_protection --export_mesh --strategy.refine-start-iter 150 --strategy.refine-stop-iter 750 --strategy.refine-every 100 --strategy.refine-scale2d-stop-iter 750 --strategy.reset-every 99990 --strategy.grow-grad2d 0.00005 --strategy.prune-scale3d 0.1
 set RC=%ERRORLEVEL%
 popd
 if not %RC%==0 ( echo FAIL stage5 rc=%RC% & exit /b %RC% )
